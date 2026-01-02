@@ -1,0 +1,5 @@
+export * from './audio/manager'
+export * from './aiavatarkit/client'
+export * from './color-from-element'
+export * from './workers/types'
+export * from './workers/worker'
