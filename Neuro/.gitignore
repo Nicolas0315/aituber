@@ -1,0 +1,11 @@
+venv/
+models/
+deepspeed-0.14.0+cu118-cp311-cp311-win_amd64.whl
+.fleet/
+__pycache__/
+.env
+realtimesst.log
+.idea/
+vtubeStudio_token.txt
+memories.json
+chroma.db/
