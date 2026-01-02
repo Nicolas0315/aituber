@@ -3,7 +3,7 @@ import { createAiAvatarKitClient } from '@proj-airi/stage-ui/libs'
 import { usePipelineCharacterSpeechPlaybackQueueStore } from '@proj-airi/stage-ui/composables/queues'
 import { EMOTION_EmotionMotionName_value, Emotion } from '@proj-airi/stage-ui/constants/emotions'
 import { useAudioContext } from '@proj-airi/stage-ui/stores/audio'
-import { useLive2d } from '@proj-airi/stage-ui/stores/live2d'
+import { defaultModelParameters, useLive2d } from '@proj-airi/stage-ui/stores/live2d'
 import { storeToRefs } from 'pinia'
 import { onMounted, onUnmounted, ref } from 'vue'
 
@@ -26,7 +26,7 @@ const { connectAudioContext, connectAudioAnalyser, clearAll, onPlaybackStarted, 
 const { playbackQueue } = storeToRefs(playbackStore)
 
 const live2dStore = useLive2d()
-const { currentMotion } = storeToRefs(live2dStore)
+const { currentMotion, emotionMotionMap, modelParameters } = storeToRefs(live2dStore)
 
 const audioAnalyser = ref<AnalyserNode>()
 
@@ -34,22 +34,120 @@ function log(line: string) {
   logs.value = [line, ...logs.value].slice(0, 80)
 }
 
-function mapFaceToMotion(face: string) {
-  const key = face.toLowerCase()
-  const emotion = ({
-    neutral: Emotion.Idle,
-    joy: Emotion.Happy,
-    happy: Emotion.Happy,
-    angry: Emotion.Angry,
-    sorrow: Emotion.Sad,
-    sad: Emotion.Sad,
-    fun: Emotion.Happy,
-    surprised: Emotion.Surprise,
-  } as Record<string, Emotion>)[key] ?? Emotion.Idle
+type Live2DParameters = typeof defaultModelParameters
 
-  const motion = EMOTION_EmotionMotionName_value[emotion]
-  if (motion)
-    currentMotion.value = { group: motion }
+const FACE_TO_EMOTION: Record<string, Emotion> = {
+  neutral: Emotion.Idle,
+  joy: Emotion.Happy,
+  happy: Emotion.Happy,
+  angry: Emotion.Angry,
+  sorrow: Emotion.Sad,
+  sad: Emotion.Sad,
+  fun: Emotion.Happy,
+  surprised: Emotion.Surprise,
+  surprise: Emotion.Surprise,
+}
+
+const FACE_PARAMETER_PRESETS: Record<string, Partial<Live2DParameters>> = {
+  neutral: {},
+  joy: {
+    leftEyeOpen: 1,
+    rightEyeOpen: 1,
+    leftEyeSmile: 0.6,
+    rightEyeSmile: 0.6,
+    leftEyebrowY: 0.2,
+    rightEyebrowY: 0.2,
+    mouthOpen: 0.4,
+    mouthForm: 0.6,
+    cheek: 0.3,
+  },
+  angry: {
+    leftEyeOpen: 0.6,
+    rightEyeOpen: 0.6,
+    leftEyebrowY: -0.3,
+    rightEyebrowY: -0.3,
+    leftEyebrowAngle: -0.4,
+    rightEyebrowAngle: 0.4,
+    mouthOpen: 0.2,
+    mouthForm: -0.4,
+  },
+  sorrow: {
+    leftEyeOpen: 0.4,
+    rightEyeOpen: 0.4,
+    leftEyebrowY: 0.3,
+    rightEyebrowY: 0.3,
+    leftEyebrowAngle: 0.3,
+    rightEyebrowAngle: -0.3,
+    mouthOpen: 0.1,
+    mouthForm: -0.5,
+  },
+  fun: {
+    leftEyeOpen: 0.8,
+    rightEyeOpen: 0.8,
+    leftEyeSmile: 0.8,
+    rightEyeSmile: 0.8,
+    mouthOpen: 0.5,
+    mouthForm: 0.7,
+    cheek: 0.35,
+  },
+  surprised: {
+    leftEyeOpen: 1,
+    rightEyeOpen: 1,
+    leftEyebrowY: 0.5,
+    rightEyebrowY: 0.5,
+    mouthOpen: 0.8,
+    mouthForm: 0.1,
+  },
+}
+
+let faceResetTimer: number | null = null
+let faceOverrideActive = false
+let faceBaseParameters: Live2DParameters = { ...defaultModelParameters }
+
+function applyFaceParameters(face: string, duration?: number) {
+  const key = face.toLowerCase()
+  const preset = FACE_PARAMETER_PRESETS[key]
+  if (!preset)
+    return
+
+  if (faceResetTimer) {
+    window.clearTimeout(faceResetTimer)
+    faceResetTimer = null
+  }
+
+  if (!faceOverrideActive)
+    faceBaseParameters = { ...modelParameters.value }
+
+  if (key === 'neutral') {
+    modelParameters.value = { ...faceBaseParameters }
+    faceOverrideActive = false
+    return
+  }
+
+  faceOverrideActive = true
+  modelParameters.value = { ...faceBaseParameters, ...preset }
+
+  if (duration && duration > 0) {
+    faceResetTimer = window.setTimeout(() => {
+      modelParameters.value = { ...faceBaseParameters }
+      faceOverrideActive = false
+      faceResetTimer = null
+    }, duration * 1000)
+  }
+}
+
+function applyEmotionMotion(face: string) {
+  const emotion = FACE_TO_EMOTION[face.toLowerCase()]
+  if (!emotion)
+    return
+  const mapped = emotionMotionMap.value[emotion]
+  if (mapped)
+    currentMotion.value = { group: mapped.group, index: mapped.index }
+  else {
+    const fallback = EMOTION_EmotionMotionName_value[emotion]
+    if (fallback)
+      currentMotion.value = { group: fallback }
+  }
 }
 
 const client = createAiAvatarKitClient({
@@ -63,7 +161,8 @@ const client = createAiAvatarKitClient({
   },
   onFace: (face, duration) => {
     log(`face: ${face}${duration ? ` (${duration}s)` : ''}`)
-    mapFaceToMotion(face)
+    applyFaceParameters(face, duration)
+    applyEmotionMotion(face)
   },
   onMicLevel: (level) => {
     micLevel.value = level
