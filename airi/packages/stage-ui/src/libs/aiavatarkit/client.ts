@@ -11,6 +11,16 @@ export interface AiAvatarKitAvatarControl {
   animation_duration?: number | null
 }
 
+export interface AiAvatarKitVisionConfig {
+  screenIntervalMs: number
+  cameraIntervalMs: number
+  diffThreshold: number
+  diffDownscaleWidth: number
+  diffDownscaleHeight: number
+  screenFrameRate: number
+  cameraFrameRate: number
+}
+
 export interface AiAvatarKitResponse {
   type: string
   session_id?: string
@@ -34,12 +44,21 @@ export interface AiAvatarKitClientOptions {
   onStop?: () => void
   onError?: (error: Error) => void
   shouldMuteMic?: () => boolean
+  vision?: Partial<AiAvatarKitVisionConfig>
 }
 
 interface FrameGrabber {
   start: () => Promise<void>
   stop: () => void
   capture: () => Promise<string | null>
+  updateConfig: (config: Partial<VisionCaptureConfig>) => void
+}
+
+interface VisionCaptureConfig {
+  minIntervalMs: number
+  diffThreshold: number
+  diffDownscaleWidth: number
+  diffDownscaleHeight: number
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer) {
@@ -71,9 +90,20 @@ function float32ToInt16Buffer(floatBuffer: Float32Array) {
   return buffer
 }
 
-function createFrameGrabber(streamFactory: () => Promise<MediaStream>): FrameGrabber {
+function createFrameGrabber(streamFactory: () => Promise<MediaStream>, config: VisionCaptureConfig): FrameGrabber {
   let stream: MediaStream | null = null
   let video: HTMLVideoElement | null = null
+  let lastSample: Uint8ClampedArray | null = null
+  let lastCaptureAt = 0
+
+  const canvas = document.createElement('canvas')
+  const sampleCanvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')
+  const sampleCtx = sampleCanvas.getContext('2d')
+
+  function updateConfig(next: Partial<VisionCaptureConfig>) {
+    Object.assign(config, next)
+  }
 
   async function start() {
     if (stream)
@@ -98,23 +128,64 @@ function createFrameGrabber(streamFactory: () => Promise<MediaStream>): FrameGra
     }
   }
 
+  function computeSample(width: number, height: number) {
+    if (!sampleCtx)
+      return null
+    const sampleWidth = Math.max(8, Math.floor(config.diffDownscaleWidth))
+    const sampleHeight = Math.max(8, Math.floor(config.diffDownscaleHeight))
+    sampleCanvas.width = sampleWidth
+    sampleCanvas.height = sampleHeight
+    sampleCtx.drawImage(canvas, 0, 0, width, height, 0, 0, sampleWidth, sampleHeight)
+    const data = sampleCtx.getImageData(0, 0, sampleWidth, sampleHeight).data
+    const luma = new Uint8ClampedArray(sampleWidth * sampleHeight)
+    for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+      const r = data[i]
+      const g = data[i + 1]
+      const b = data[i + 2]
+      luma[j] = Math.round((0.2126 * r) + (0.7152 * g) + (0.0722 * b))
+    }
+    return luma
+  }
+
+  function diffRatio(sample: Uint8ClampedArray, prev: Uint8ClampedArray) {
+    if (sample.length !== prev.length)
+      return 1
+    let sum = 0
+    for (let i = 0; i < sample.length; i++)
+      sum += Math.abs(sample[i] - prev[i])
+    return sum / (sample.length * 255)
+  }
+
   async function capture() {
-    if (!video)
+    if (!video || !ctx)
+      return null
+
+    const now = Date.now()
+    if (config.minIntervalMs > 0 && (now - lastCaptureAt) < config.minIntervalMs)
       return null
 
     const width = video.videoWidth || 1280
     const height = video.videoHeight || 720
-    const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
-    const ctx = canvas.getContext('2d')
-    if (!ctx)
-      return null
     ctx.drawImage(video, 0, 0, width, height)
+
+    const sample = computeSample(width, height)
+    if (sample && config.diffThreshold > 0 && lastSample) {
+      const delta = diffRatio(sample, lastSample)
+      if (delta < config.diffThreshold) {
+        lastCaptureAt = now
+        return null
+      }
+    }
+
+    if (sample)
+      lastSample = sample
+    lastCaptureAt = now
     return canvas.toDataURL('image/jpeg', 0.9)
   }
 
-  return { start, stop, capture }
+  return { start, stop, capture, updateConfig }
 }
 
 export function createAiAvatarKitClient(options: AiAvatarKitClientOptions) {
@@ -127,6 +198,16 @@ export function createAiAvatarKitClient(options: AiAvatarKitClientOptions) {
   let scriptNode: ScriptProcessorNode | null = null
   let screenGrabber: FrameGrabber | null = null
   let cameraGrabber: FrameGrabber | null = null
+  const visionConfig: AiAvatarKitVisionConfig = {
+    screenIntervalMs: 1000,
+    cameraIntervalMs: 1000,
+    diffThreshold: 0.08,
+    diffDownscaleWidth: 64,
+    diffDownscaleHeight: 36,
+    screenFrameRate: 5,
+    cameraFrameRate: 5,
+    ...options.vision,
+  }
 
   const state = {
     connected: false,
@@ -143,6 +224,22 @@ export function createAiAvatarKitClient(options: AiAvatarKitClientOptions) {
   function sendMessage(payload: Record<string, any>) {
     if (ws && ws.readyState === WebSocket.OPEN)
       ws.send(JSON.stringify(payload))
+  }
+
+  function setVisionConfig(next: Partial<AiAvatarKitVisionConfig>) {
+    Object.assign(visionConfig, next)
+    screenGrabber?.updateConfig({
+      minIntervalMs: visionConfig.screenIntervalMs,
+      diffThreshold: visionConfig.diffThreshold,
+      diffDownscaleWidth: visionConfig.diffDownscaleWidth,
+      diffDownscaleHeight: visionConfig.diffDownscaleHeight,
+    })
+    cameraGrabber?.updateConfig({
+      minIntervalMs: visionConfig.cameraIntervalMs,
+      diffThreshold: visionConfig.diffThreshold,
+      diffDownscaleWidth: visionConfig.diffDownscaleWidth,
+      diffDownscaleHeight: visionConfig.diffDownscaleHeight,
+    })
   }
 
   async function connect(params: { url: string, sessionId: string, userId: string }) {
@@ -292,10 +389,18 @@ export function createAiAvatarKitClient(options: AiAvatarKitClientOptions) {
     state.screenEnabled = enabled
     if (enabled) {
       if (!screenGrabber) {
-        screenGrabber = createFrameGrabber(() => navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: 5 },
-          audio: false,
-        }))
+        screenGrabber = createFrameGrabber(
+          () => navigator.mediaDevices.getDisplayMedia({
+            video: { frameRate: visionConfig.screenFrameRate },
+            audio: false,
+          }),
+          {
+            minIntervalMs: visionConfig.screenIntervalMs,
+            diffThreshold: visionConfig.diffThreshold,
+            diffDownscaleWidth: visionConfig.diffDownscaleWidth,
+            diffDownscaleHeight: visionConfig.diffDownscaleHeight,
+          },
+        )
       }
       await screenGrabber.start()
     }
@@ -308,10 +413,18 @@ export function createAiAvatarKitClient(options: AiAvatarKitClientOptions) {
     state.cameraEnabled = enabled
     if (enabled) {
       if (!cameraGrabber) {
-        cameraGrabber = createFrameGrabber(() => navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        }))
+        cameraGrabber = createFrameGrabber(
+          () => navigator.mediaDevices.getUserMedia({
+            video: { frameRate: visionConfig.cameraFrameRate },
+            audio: false,
+          }),
+          {
+            minIntervalMs: visionConfig.cameraIntervalMs,
+            diffThreshold: visionConfig.diffThreshold,
+            diffDownscaleWidth: visionConfig.diffDownscaleWidth,
+            diffDownscaleHeight: visionConfig.diffDownscaleHeight,
+          },
+        )
       }
       await cameraGrabber.start()
     }
@@ -368,6 +481,7 @@ export function createAiAvatarKitClient(options: AiAvatarKitClientOptions) {
     setMicEnabled,
     setScreenEnabled,
     setCameraEnabled,
+    setVisionConfig,
     state,
   }
 }

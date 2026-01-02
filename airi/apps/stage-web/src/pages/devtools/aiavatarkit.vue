@@ -5,7 +5,8 @@ import { EMOTION_EmotionMotionName_value, Emotion } from '@proj-airi/stage-ui/co
 import { useAudioContext } from '@proj-airi/stage-ui/stores/audio'
 import { defaultModelParameters, useLive2d } from '@proj-airi/stage-ui/stores/live2d'
 import { storeToRefs } from 'pinia'
-import { onMounted, onUnmounted, ref } from 'vue'
+import { useLocalStorage } from '@vueuse/core'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 
 const wsUrl = ref('ws://localhost:8000/ws')
 const sessionId = ref('airi_session')
@@ -20,6 +21,17 @@ const micLevel = ref(0)
 const isPlaying = ref(false)
 const logs = ref<string[]>([])
 
+const screenIntervalMs = useLocalStorage('aiavatarkit-vision-screen-interval', 1000)
+const cameraIntervalMs = useLocalStorage('aiavatarkit-vision-camera-interval', 1000)
+const diffThreshold = useLocalStorage('aiavatarkit-vision-diff-threshold', 0.08)
+const diffDownscaleWidth = useLocalStorage('aiavatarkit-vision-downscale-width', 64)
+const diffDownscaleHeight = useLocalStorage('aiavatarkit-vision-downscale-height', 36)
+const screenFrameRate = useLocalStorage('aiavatarkit-vision-screen-fps', 5)
+const cameraFrameRate = useLocalStorage('aiavatarkit-vision-camera-fps', 5)
+
+const screenHotkey = useLocalStorage('aiavatarkit-hotkey-screen', 'Ctrl+Shift+S')
+const cameraHotkey = useLocalStorage('aiavatarkit-hotkey-camera', 'Ctrl+Shift+C')
+
 const { audioContext } = useAudioContext()
 const playbackStore = usePipelineCharacterSpeechPlaybackQueueStore()
 const { connectAudioContext, connectAudioAnalyser, clearAll, onPlaybackStarted, onPlaybackFinished } = playbackStore
@@ -32,6 +44,40 @@ const audioAnalyser = ref<AnalyserNode>()
 
 function log(line: string) {
   logs.value = [line, ...logs.value].slice(0, 80)
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement))
+    return false
+  return target.tagName === 'INPUT'
+    || target.tagName === 'TEXTAREA'
+    || target.isContentEditable
+}
+
+function parseHotkey(hotkey: string) {
+  const parts = hotkey.toLowerCase().split('+').map(part => part.trim()).filter(Boolean)
+  const modifiers = new Set(parts.filter(part => ['ctrl', 'control', 'shift', 'alt', 'meta', 'cmd', 'command'].includes(part)))
+  const key = parts.find(part => !modifiers.has(part)) || ''
+  return {
+    key,
+    ctrl: modifiers.has('ctrl') || modifiers.has('control'),
+    shift: modifiers.has('shift'),
+    alt: modifiers.has('alt'),
+    meta: modifiers.has('meta') || modifiers.has('cmd') || modifiers.has('command'),
+  }
+}
+
+function matchesHotkey(event: KeyboardEvent, hotkey: string) {
+  if (!hotkey)
+    return false
+  const parsed = parseHotkey(hotkey)
+  const key = event.key.toLowerCase()
+  const normalizedKey = key === ' ' ? 'space' : key
+  return parsed.key === normalizedKey
+    && event.ctrlKey === parsed.ctrl
+    && event.shiftKey === parsed.shift
+    && event.altKey === parsed.alt
+    && event.metaKey === parsed.meta
 }
 
 type Live2DParameters = typeof defaultModelParameters
@@ -180,6 +226,22 @@ const client = createAiAvatarKitClient({
   shouldMuteMic: () => isPlaying.value,
 })
 
+watch(
+  [screenIntervalMs, cameraIntervalMs, diffThreshold, diffDownscaleWidth, diffDownscaleHeight, screenFrameRate, cameraFrameRate],
+  () => {
+    client.setVisionConfig({
+      screenIntervalMs: Number(screenIntervalMs.value),
+      cameraIntervalMs: Number(cameraIntervalMs.value),
+      diffThreshold: Number(diffThreshold.value),
+      diffDownscaleWidth: Number(diffDownscaleWidth.value),
+      diffDownscaleHeight: Number(diffDownscaleHeight.value),
+      screenFrameRate: Number(screenFrameRate.value),
+      cameraFrameRate: Number(cameraFrameRate.value),
+    })
+  },
+  { immediate: true },
+)
+
 async function handleConnect() {
   await client.connect({ url: wsUrl.value, sessionId: sessionId.value, userId: userId.value })
 }
@@ -212,12 +274,27 @@ function handleSendText() {
   inputText.value = ''
 }
 
+function handleKeydown(event: KeyboardEvent) {
+  if (isEditableTarget(event.target))
+    return
+  if (matchesHotkey(event, screenHotkey.value)) {
+    event.preventDefault()
+    handleToggleScreen()
+    return
+  }
+  if (matchesHotkey(event, cameraHotkey.value)) {
+    event.preventDefault()
+    handleToggleCamera()
+  }
+}
+
 onMounted(() => {
   connectAudioContext(audioContext)
   if (!audioAnalyser.value) {
     audioAnalyser.value = audioContext.createAnalyser()
     connectAudioAnalyser(audioAnalyser.value)
   }
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onPlaybackStarted(() => {
@@ -231,6 +308,7 @@ onPlaybackFinished(() => {
 onUnmounted(() => {
   client.disconnect()
   clearAll()
+  window.removeEventListener('keydown', handleKeydown)
 })
 </script>
 
@@ -279,6 +357,47 @@ onUnmounted(() => {
       <div :class="['text-xs', 'text-neutral-500', 'dark:text-neutral-400', 'self-center']">
         Mic level: {{ micLevel.toFixed(4) }}
       </div>
+    </div>
+
+    <div :class="['grid', 'gap-3', 'sm:grid-cols-2']">
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Screen interval (ms)</span>
+        <input v-model.number="screenIntervalMs" type="number" min="0" step="50" :class="['rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+      </label>
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Camera interval (ms)</span>
+        <input v-model.number="cameraIntervalMs" type="number" min="0" step="50" :class="['rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+      </label>
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Diff threshold (0-1)</span>
+        <input v-model.number="diffThreshold" type="number" min="0" max="1" step="0.01" :class="['rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+      </label>
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Downscale (W x H)</span>
+        <div :class="['flex', 'gap-2']">
+          <input v-model.number="diffDownscaleWidth" type="number" min="8" step="1" :class="['w-24', 'rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+          <input v-model.number="diffDownscaleHeight" type="number" min="8" step="1" :class="['w-24', 'rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+        </div>
+      </label>
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Screen FPS</span>
+        <input v-model.number="screenFrameRate" type="number" min="1" step="1" :class="['rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+      </label>
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Camera FPS</span>
+        <input v-model.number="cameraFrameRate" type="number" min="1" step="1" :class="['rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+      </label>
+    </div>
+
+    <div :class="['grid', 'gap-3', 'sm:grid-cols-2']">
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Hotkey: Toggle Screen</span>
+        <input v-model="screenHotkey" placeholder="Ctrl+Shift+S" :class="['rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+      </label>
+      <label :class="['flex', 'flex-col', 'gap-1']">
+        <span :class="['text-sm', 'text-neutral-500', 'dark:text-neutral-400']">Hotkey: Toggle Camera</span>
+        <input v-model="cameraHotkey" placeholder="Ctrl+Shift+C" :class="['rounded', 'border', 'border-neutral-300', 'px-2', 'py-1', 'text-sm', 'dark:border-neutral-700', 'dark:bg-neutral-900']">
+      </label>
     </div>
 
     <div :class="['flex', 'gap-2']">
