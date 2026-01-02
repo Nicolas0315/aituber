@@ -8,6 +8,7 @@ from fastapi.responses import PlainTextResponse
 from aiavatar.adapter.websocket.server import AIAvatarWebSocketServer
 from aiavatar.sts.models import STSRequest
 from aiavatar.sts.vad.silero import SileroSpeechDetector
+from aiavatar.sts.tts import create_instant_synthesizer
 from aiavatar.sts.tts.voicevox import VoicevoxSpeechSynthesizer
 from aiavatar.sts.llm.chatgpt import ChatGPTService
 from aiavatar.sts.stt.openai import OpenAISpeechRecognizer
@@ -57,17 +58,89 @@ Memory:
 """
 
 
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").strip()
-LLM_API_KEY = os.getenv("LLM_API_KEY", "local")
-LLM_MODEL = os.getenv("LLM_MODEL", "local-model")
-VOICEVOX_URL = os.getenv("VOICEVOX_URL", "http://127.0.0.1:50021")
-VOICEVOX_SPEAKER = int(os.getenv("VOICEVOX_SPEAKER", "46"))
+LLM_PRESETS = {
+    "llama.cpp": "http://127.0.0.1:8080/v1",
+    "vllm": "http://127.0.0.1:8000/v1",
+    "ollama": "http://127.0.0.1:11434/v1",
+}
 
-STT_MODEL = os.getenv("STT_MODEL", "small")
-STT_DEVICE = os.getenv("STT_DEVICE", "cuda")
-STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "int8")
+
+def join_url(base_url: str, path: str) -> str:
+    return base_url.rstrip("/") + "/" + path.lstrip("/")
+
+
+def resolve_llm_base_url() -> str:
+    base_url = os.getenv("LLM_BASE_URL", "").strip()
+    preset = os.getenv("LLM_PRESET", "").strip().lower()
+    if not base_url and preset:
+        base_url = LLM_PRESETS.get(preset, "")
+    return base_url
+
+
+def resolve_stt_settings() -> tuple[str, str, str]:
+    model = os.getenv("STT_MODEL", "small").strip()
+    device = os.getenv("STT_DEVICE", "").strip() or "cuda"
+    compute_type = os.getenv("STT_COMPUTE_TYPE", "").strip()
+    preset = os.getenv("STT_PRESET", "").strip().lower()
+    if preset in ("tiny", "small", "medium"):
+        model = preset
+        if not compute_type:
+            compute_type = "int8_float16" if preset == "medium" else "int8"
+    if not compute_type:
+        compute_type = "int8"
+    return model, device, compute_type
+
+
+def create_tts_provider(debug: bool):
+    provider = os.getenv("TTS_PROVIDER", "voicevox").strip().lower()
+    if provider in ("", "voicevox"):
+        base_url = os.getenv("TTS_VOICEVOX_URL", os.getenv("VOICEVOX_URL", "http://127.0.0.1:50021"))
+        speaker = int(os.getenv("TTS_VOICEVOX_SPEAKER", os.getenv("VOICEVOX_SPEAKER", "46")))
+        return VoicevoxSpeechSynthesizer(
+            base_url=base_url,
+            speaker=speaker,
+            debug=debug,
+        )
+    if provider in ("style-bert-vits2", "style_bert_vits2"):
+        base_url = os.getenv("STYLE_BERT_VITS2_URL", "http://127.0.0.1:5000").strip()
+        endpoint = os.getenv("STYLE_BERT_VITS2_ENDPOINT", "/voice")
+        speaker = os.getenv("STYLE_BERT_VITS2_SPEAKER", "0").strip()
+        language = os.getenv("STYLE_BERT_VITS2_LANGUAGE", "").strip()
+        payload = {"text": "{text}", "speaker": speaker}
+        if language:
+            payload["language"] = language
+        return create_instant_synthesizer(
+            method="POST",
+            url=join_url(base_url, endpoint),
+            json=payload,
+            debug=debug,
+        )
+    if provider == "coqui":
+        base_url = os.getenv("COQUI_TTS_URL", "http://127.0.0.1:5002").strip()
+        endpoint = os.getenv("COQUI_TTS_ENDPOINT", "/api/tts")
+        speaker_id = os.getenv("COQUI_SPEAKER_ID", "").strip()
+        language_id = os.getenv("COQUI_LANGUAGE_ID", "").strip()
+        payload = {"text": "{text}"}
+        if speaker_id:
+            payload["speaker_id"] = speaker_id
+        if language_id:
+            payload["language_id"] = language_id
+        use_json = env_bool("COQUI_USE_JSON", "false")
+        return create_instant_synthesizer(
+            method="POST",
+            url=join_url(base_url, endpoint),
+            json=payload if use_json else None,
+            params=None if use_json else payload,
+            debug=debug,
+        )
+    raise RuntimeError(f"Unknown TTS_PROVIDER: {provider}")
+
 
 DEBUG = env_bool("DEBUG", "false")
+LLM_BASE_URL = resolve_llm_base_url()
+LLM_API_KEY = os.getenv("LLM_API_KEY", "local")
+LLM_MODEL = os.getenv("LLM_MODEL", "local-model")
+STT_MODEL, STT_DEVICE, STT_COMPUTE_TYPE = resolve_stt_settings()
 APP_START_TIME = time.time()
 CHAT_ROUTER: ChatRouter | None = None
 
@@ -108,12 +181,8 @@ llm = ChatGPTService(
     debug=DEBUG,
 )
 
-# TTS (local Voicevox)
-tts = VoicevoxSpeechSynthesizer(
-    base_url=VOICEVOX_URL,
-    speaker=VOICEVOX_SPEAKER,
-    debug=DEBUG,
-)
+# TTS (local)
+tts = create_tts_provider(DEBUG)
 
 # AIAvatar server
 aiavatar_app = AIAvatarWebSocketServer(

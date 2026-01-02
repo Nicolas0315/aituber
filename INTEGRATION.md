@@ -15,8 +15,12 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 Set env vars (see `aiavatarkit/examples/aituber/config.example.env`):
 - `LLM_BASE_URL`
 - `LLM_MODEL`
-- `VOICEVOX_URL`
-- `STT_MODEL`
+- `TTS_PROVIDER`
+- `TTS_VOICEVOX_URL`
+- `STT_PRESET` or `STT_MODEL`
+
+Optional presets:
+- `LLM_PRESET` (llama.cpp/vllm/ollama)
 
 Optional:
 - Twitch/YouTube chat ingestion (set `TWITCH_*` / `YOUTUBE_*`)

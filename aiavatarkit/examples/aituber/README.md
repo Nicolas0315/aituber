@@ -25,16 +25,30 @@ pip install twitchio pytchat  # optional, for chat ingestion
 Copy `config.example.env` and set values:
 
 ```bash
+LLM_PRESET=ollama
 LLM_BASE_URL=http://127.0.0.1:8000/v1
 LLM_MODEL=local-model
 LLM_API_KEY=local
-VOICEVOX_URL=http://127.0.0.1:50021
-VOICEVOX_SPEAKER=46
+
+TTS_PROVIDER=voicevox
+TTS_VOICEVOX_URL=http://127.0.0.1:50021
+TTS_VOICEVOX_SPEAKER=46
+
+STT_PRESET=small
 STT_MODEL=small
 STT_DEVICE=cuda
 STT_COMPUTE_TYPE=int8
 DEBUG=false
 ```
+
+Presets:
+- `LLM_PRESET`: `llama.cpp`, `vllm`, or `ollama` (fills `LLM_BASE_URL` if empty).
+- `STT_PRESET`: `tiny`, `small`, or `medium` (overrides model/compute defaults).
+- `TTS_PROVIDER`: `voicevox`, `style-bert-vits2`, `coqui`.
+
+Local TTS providers:
+- Style-Bert-VITS2: set `STYLE_BERT_VITS2_URL`, optional `STYLE_BERT_VITS2_ENDPOINT`, `STYLE_BERT_VITS2_SPEAKER`.
+- Coqui TTS server: set `COQUI_TTS_URL`, optional `COQUI_TTS_ENDPOINT`, `COQUI_SPEAKER_ID`, `COQUI_LANGUAGE_ID`.
 
 Optional chat ingestion:
 ```bash
