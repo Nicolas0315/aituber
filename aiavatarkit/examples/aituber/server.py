@@ -12,12 +12,32 @@ from aiavatar.sts.llm.chatgpt import ChatGPTService
 from aiavatar.sts.stt.openai import OpenAISpeechRecognizer
 from aiavatar.sts.stt.faster_whisper import FasterWhisperSpeechRecognizer
 
-from chat_sources import ChatRouter, TwitchChatSource, YouTubeChatSource
+from chat_sources import (
+    ChatFilterConfig,
+    ChatPriorityPolicy,
+    ChatRouter,
+    TwitchChatSource,
+    YouTubeChatSource,
+)
 from memory import SimpleMemoryStore
 
 
 def env_bool(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def parse_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def load_blocklist(path: str) -> set[str]:
+    if not path:
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return {line.strip().casefold() for line in handle if line.strip() and not line.startswith("#")}
+    except OSError:
+        return set()
 
 
 SYSTEM_PROMPT = """
@@ -150,7 +170,29 @@ async def store_memory(request, response):
 
 
 async def chat_ingest_worker():
-    router = ChatRouter(min_interval_sec=float(os.getenv("CHAT_MIN_INTERVAL_SEC", "2.0")))
+    blocklist = {word.casefold() for word in parse_csv(os.getenv("CHAT_BLOCKLIST", ""))}
+    blocklist |= load_blocklist(os.getenv("CHAT_BLOCKLIST_PATH", "").strip())
+    allowed_langs = {lang.casefold() for lang in parse_csv(os.getenv("CHAT_ALLOWED_LANGS", "ja,en"))}
+
+    filter_config = ChatFilterConfig(
+        max_length=int(os.getenv("CHAT_MAX_LENGTH", "200")),
+        min_length=int(os.getenv("CHAT_MIN_LENGTH", "1")),
+        allowed_langs=allowed_langs,
+        blocklist=blocklist,
+        repeat_ratio_threshold=float(os.getenv("CHAT_REPEAT_RATIO_THRESHOLD", "0.6")),
+        repeat_run_threshold=int(os.getenv("CHAT_REPEAT_RUN_THRESHOLD", "8")),
+    )
+
+    priority_policy = ChatPriorityPolicy(
+        mention_keywords=parse_csv(os.getenv("CHAT_MENTION_KEYWORDS", "")),
+        bot_name=os.getenv("CHAT_BOT_NAME", "").strip(),
+    )
+
+    router = ChatRouter(
+        min_interval_sec=float(os.getenv("CHAT_MIN_INTERVAL_SEC", "2.0")),
+        filter_config=filter_config,
+        priority_policy=priority_policy,
+    )
     if env_bool("TWITCH_ENABLED", "false"):
         router.add_source(TwitchChatSource(os.getenv("TWITCH_TOKEN", ""), os.getenv("TWITCH_CHANNEL", "")))
     if env_bool("YOUTUBE_ENABLED", "false"):

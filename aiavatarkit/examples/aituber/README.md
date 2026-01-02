@@ -47,7 +47,20 @@ YOUTUBE_VIDEO_ID=your_live_video_id
 
 CHAT_SESSION_ID=airi_chat
 CHAT_MIN_INTERVAL_SEC=2.0
+CHAT_MAX_LENGTH=200
+CHAT_MIN_LENGTH=1
+CHAT_ALLOWED_LANGS=ja,en
+CHAT_BLOCKLIST=
+CHAT_BLOCKLIST_PATH=
+CHAT_REPEAT_RATIO_THRESHOLD=0.6
+CHAT_REPEAT_RUN_THRESHOLD=8
+CHAT_MENTION_KEYWORDS=airi
+CHAT_BOT_NAME=airi
 ```
+
+Chat filters drop spammy messages by length, repeated characters, or blocklist entries.
+Mentions (via `CHAT_BOT_NAME` or `CHAT_MENTION_KEYWORDS`) are prioritized over paid chat,
+which is prioritized over normal messages.
 
 ## Run
 ```bash
