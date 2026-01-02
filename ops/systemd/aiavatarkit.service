@@ -1,0 +1,16 @@
+[Unit]
+Description=AIAvatarKit AItuber backend
+After=network.target
+
+[Service]
+Type=simple
+User=aituber
+WorkingDirectory=/opt/aituber/aiavatarkit/examples/aituber
+EnvironmentFile=/opt/aituber/aiavatarkit/examples/aituber/.env
+ExecStart=/opt/aituber/.venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

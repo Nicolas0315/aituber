@@ -72,6 +72,13 @@ The WebSocket endpoint is:
 ws://localhost:8000/ws
 ```
 
+## Process supervisor (systemd / pm2)
+Example configs are in `ops/`:
+- `ops/systemd/aiavatarkit.service`
+- `ops/pm2/aiavatarkit.json`
+
+Adjust paths and env files for your deployment.
+
 ## Frontend (AIRI Live2D)
 1) Run stage-web:
 ```bash
