@@ -73,6 +73,10 @@ The WebSocket endpoint is:
 ws://localhost:8000/ws
 ```
 
+## Observability
+- Health: `http://localhost:8000/healthz`
+- Metrics (Prometheus text): `http://localhost:8000/metrics`
+
 ## Process supervisor (systemd / pm2)
 Example configs are in `ops/`:
 - `ops/systemd/aiavatarkit.service`

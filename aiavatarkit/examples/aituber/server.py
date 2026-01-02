@@ -3,6 +3,7 @@ import os
 import time
 
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 
 from aiavatar.adapter.websocket.server import AIAvatarWebSocketServer
 from aiavatar.sts.models import STSRequest
@@ -67,6 +68,8 @@ STT_DEVICE = os.getenv("STT_DEVICE", "cuda")
 STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "int8")
 
 DEBUG = env_bool("DEBUG", "false")
+APP_START_TIME = time.time()
+CHAT_ROUTER: ChatRouter | None = None
 
 
 if not LLM_BASE_URL:
@@ -170,6 +173,7 @@ async def store_memory(request, response):
 
 
 async def chat_ingest_worker():
+    global CHAT_ROUTER
     blocklist = {word.casefold() for word in parse_csv(os.getenv("CHAT_BLOCKLIST", ""))}
     blocklist |= load_blocklist(os.getenv("CHAT_BLOCKLIST_PATH", "").strip())
     allowed_langs = {lang.casefold() for lang in parse_csv(os.getenv("CHAT_ALLOWED_LANGS", "ja,en"))}
@@ -194,6 +198,7 @@ async def chat_ingest_worker():
         filter_config=filter_config,
         priority_policy=priority_policy,
     )
+    CHAT_ROUTER = router
     if env_bool("TWITCH_ENABLED", "false"):
         router.add_source(TwitchChatSource(os.getenv("TWITCH_TOKEN", ""), os.getenv("TWITCH_CHANNEL", "")))
     if env_bool("YOUTUBE_ENABLED", "false"):
@@ -232,6 +237,73 @@ async def chat_ingest_worker():
 
 app = FastAPI()
 app.include_router(aiavatar_app.get_websocket_router())
+
+
+def build_metrics_text() -> str:
+    metrics = CHAT_ROUTER.get_metrics() if CHAT_ROUTER else {
+        "raw_queue_depth": 0,
+        "queue_depth": 0,
+        "max_queue_size": 0,
+        "dropped_total": 0,
+        "filtered_total": 0,
+        "enqueued_total": 0,
+        "processed_total": 0,
+        "last_message_at": 0.0,
+        "last_sent_at": 0.0,
+        "last_drop_at": 0.0,
+    }
+    uptime = time.time() - APP_START_TIME
+
+    lines = [
+        "# HELP aitatuber_uptime_seconds Uptime in seconds.",
+        "# TYPE aitatuber_uptime_seconds gauge",
+        f"aitatuber_uptime_seconds {uptime:.0f}",
+        "# HELP aitatuber_chat_queue_depth Current priority queue depth.",
+        "# TYPE aitatuber_chat_queue_depth gauge",
+        f"aitatuber_chat_queue_depth {metrics['queue_depth']}",
+        "# HELP aitatuber_chat_raw_queue_depth Current raw queue depth.",
+        "# TYPE aitatuber_chat_raw_queue_depth gauge",
+        f"aitatuber_chat_raw_queue_depth {metrics['raw_queue_depth']}",
+        "# HELP aitatuber_chat_queue_max_size Configured queue max size.",
+        "# TYPE aitatuber_chat_queue_max_size gauge",
+        f"aitatuber_chat_queue_max_size {metrics['max_queue_size']}",
+        "# HELP aitatuber_chat_dropped_total Dropped chat messages.",
+        "# TYPE aitatuber_chat_dropped_total counter",
+        f"aitatuber_chat_dropped_total {metrics['dropped_total']}",
+        "# HELP aitatuber_chat_filtered_total Filtered chat messages.",
+        "# TYPE aitatuber_chat_filtered_total counter",
+        f"aitatuber_chat_filtered_total {metrics['filtered_total']}",
+        "# HELP aitatuber_chat_enqueued_total Enqueued chat messages.",
+        "# TYPE aitatuber_chat_enqueued_total counter",
+        f"aitatuber_chat_enqueued_total {metrics['enqueued_total']}",
+        "# HELP aitatuber_chat_processed_total Processed chat messages.",
+        "# TYPE aitatuber_chat_processed_total counter",
+        f"aitatuber_chat_processed_total {metrics['processed_total']}",
+        "# HELP aitatuber_chat_last_message_ts_seconds Last message enqueue timestamp.",
+        "# TYPE aitatuber_chat_last_message_ts_seconds gauge",
+        f"aitatuber_chat_last_message_ts_seconds {metrics['last_message_at']:.0f}",
+        "# HELP aitatuber_chat_last_sent_ts_seconds Last message sent timestamp.",
+        "# TYPE aitatuber_chat_last_sent_ts_seconds gauge",
+        f"aitatuber_chat_last_sent_ts_seconds {metrics['last_sent_at']:.0f}",
+        "# HELP aitatuber_chat_last_drop_ts_seconds Last drop timestamp.",
+        "# TYPE aitatuber_chat_last_drop_ts_seconds gauge",
+        f"aitatuber_chat_last_drop_ts_seconds {metrics['last_drop_at']:.0f}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@app.get("/healthz")
+def healthz():
+    return {
+        "status": "ok",
+        "uptime_seconds": int(time.time() - APP_START_TIME),
+        "chat_router_running": CHAT_ROUTER is not None,
+    }
+
+
+@app.get("/metrics")
+def metrics():
+    return PlainTextResponse(build_metrics_text())
 
 
 @app.on_event("startup")
