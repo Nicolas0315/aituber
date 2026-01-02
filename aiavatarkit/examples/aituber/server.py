@@ -190,6 +190,7 @@ async def chat_ingest_worker():
 
     router = ChatRouter(
         min_interval_sec=float(os.getenv("CHAT_MIN_INTERVAL_SEC", "2.0")),
+        max_queue_size=int(os.getenv("CHAT_MAX_QUEUE_SIZE", "200")),
         filter_config=filter_config,
         priority_policy=priority_policy,
     )

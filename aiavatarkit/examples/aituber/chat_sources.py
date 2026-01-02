@@ -35,6 +35,17 @@ class ChatPriorityPolicy:
     mention_priority: int = 2
 
 
+@dataclass
+class ChatMetrics:
+    dropped_total: int = 0
+    filtered_total: int = 0
+    enqueued_total: int = 0
+    processed_total: int = 0
+    last_message_at: float = 0.0
+    last_sent_at: float = 0.0
+    last_drop_at: float = 0.0
+
+
 def _normalize_list(values: list[str]) -> list[str]:
     return [value.strip() for value in values if value.strip()]
 
@@ -157,8 +168,19 @@ class ChatPriority:
         return priority
 
 
+class ChatInputQueue:
+    def __init__(self, router: "ChatRouter"):
+        self.router = router
+
+    async def put(self, message: ChatMessage) -> None:
+        await self.router.enqueue(message)
+
+    def put_nowait(self, message: ChatMessage) -> None:
+        self.router.enqueue_nowait(message)
+
+
 class ChatSourceBase:
-    async def start(self, queue: asyncio.Queue) -> None:
+    async def start(self, queue: ChatInputQueue) -> None:
         raise NotImplementedError
 
     async def stop(self) -> None:
@@ -171,7 +193,7 @@ class TwitchChatSource(ChatSourceBase):
         self.channel = channel
         self._client = None
 
-    async def start(self, queue: asyncio.Queue) -> None:
+    async def start(self, queue: ChatInputQueue) -> None:
         try:
             import twitchio
         except ImportError as exc:
@@ -221,7 +243,7 @@ class YouTubeChatSource(ChatSourceBase):
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-    async def start(self, queue: asyncio.Queue) -> None:
+    async def start(self, queue: ChatInputQueue) -> None:
         try:
             import pytchat
         except ImportError as exc:
@@ -263,26 +285,31 @@ class ChatRouter:
     def __init__(
         self,
         min_interval_sec: float = 2.0,
+        max_queue_size: int = 200,
         filter_config: Optional[ChatFilterConfig] = None,
         priority_policy: Optional[ChatPriorityPolicy] = None,
     ):
-        self.raw_queue: asyncio.Queue[ChatMessage] = asyncio.Queue()
-        self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        maxsize = max_queue_size if max_queue_size > 0 else 0
+        self.raw_queue: asyncio.Queue[ChatMessage] = asyncio.Queue(maxsize=maxsize)
+        self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=maxsize)
         self.sources: list[ChatSourceBase] = []
         self.min_interval_sec = min_interval_sec
+        self.max_queue_size = max_queue_size
         self._last_sent_at: float = 0.0
         self._tasks: list[asyncio.Task] = []
         self._filter_task: Optional[asyncio.Task] = None
         self._counter = 0
         self._filter = ChatFilter(filter_config or ChatFilterConfig())
         self._priority = ChatPriority(priority_policy or ChatPriorityPolicy())
+        self._input_queue = ChatInputQueue(self)
+        self.metrics = ChatMetrics()
 
     def add_source(self, source: ChatSourceBase) -> None:
         self.sources.append(source)
 
     async def start(self) -> None:
         for source in self.sources:
-            self._tasks.append(asyncio.create_task(source.start(self.raw_queue)))
+            self._tasks.append(asyncio.create_task(source.start(self._input_queue)))
         self._filter_task = asyncio.create_task(self._filter_worker())
 
     async def stop(self) -> None:
@@ -296,16 +323,22 @@ class ChatRouter:
 
     async def next_message(self) -> ChatMessage:
         _, _, _, message = await self.queue.get()
+        self.metrics.processed_total += 1
         return message
 
     async def _filter_worker(self) -> None:
         while True:
             message = await self.raw_queue.get()
             if not self._filter.allows(message):
+                self.metrics.filtered_total += 1
                 continue
             priority = self._priority.compute(message)
             self._counter += 1
-            await self.queue.put((-priority, time.time(), self._counter, message))
+            try:
+                self.queue.put_nowait((-priority, time.time(), self._counter, message))
+            except asyncio.QueueFull:
+                self.metrics.dropped_total += 1
+                self.metrics.last_drop_at = time.time()
 
     def can_send_now(self, now_ts: float) -> bool:
         if self._last_sent_at == 0.0:
@@ -314,3 +347,30 @@ class ChatRouter:
 
     def mark_sent(self, now_ts: float) -> None:
         self._last_sent_at = now_ts
+        self.metrics.last_sent_at = now_ts
+
+    async def enqueue(self, message: ChatMessage) -> None:
+        self.enqueue_nowait(message)
+
+    def enqueue_nowait(self, message: ChatMessage) -> None:
+        try:
+            self.raw_queue.put_nowait(message)
+            self.metrics.enqueued_total += 1
+            self.metrics.last_message_at = time.time()
+        except asyncio.QueueFull:
+            self.metrics.dropped_total += 1
+            self.metrics.last_drop_at = time.time()
+
+    def get_metrics(self) -> dict:
+        return {
+            "raw_queue_depth": self.raw_queue.qsize(),
+            "queue_depth": self.queue.qsize(),
+            "max_queue_size": self.max_queue_size,
+            "dropped_total": self.metrics.dropped_total,
+            "filtered_total": self.metrics.filtered_total,
+            "enqueued_total": self.metrics.enqueued_total,
+            "processed_total": self.metrics.processed_total,
+            "last_message_at": self.metrics.last_message_at,
+            "last_sent_at": self.metrics.last_sent_at,
+            "last_drop_at": self.metrics.last_drop_at,
+        }
