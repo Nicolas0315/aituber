@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { Button, Checkbox, FieldRange } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import { Emotion } from '../../../../constants/emotions'
 import { defaultModelParameters, useLive2d } from '../../../../stores/live2d'
 import { useSettings } from '../../../../stores/settings'
 import { Section } from '../../../layouts'
@@ -27,12 +28,48 @@ const {
   position,
   modelParameters,
   currentMotion,
+  emotionMotionMap,
+  availableMotions,
 } = storeToRefs(live2d)
 
 const selectedRuntimeMotion = ref<string>('')
 const selectedRuntimeMotionName = ref<string>('')
 const runtimeMotions = ref<Array<{ name: string, fullPath: string, displayPath: string, group: string, index: number }>>([])
 const showMotionSelector = ref(false)
+const emotionOptions = Object.entries(Emotion).map(([label, value]) => ({ label, value }))
+const motionOptions = computed(() => availableMotions.value.map(motion => ({
+  key: `${motion.motionName}:${motion.motionIndex}`,
+  label: `${motion.motionName} #${motion.motionIndex} (${motion.fileName.split('/').pop() || motion.fileName})`,
+})))
+
+function makeMotionKey(group: string, index: number) {
+  return `${group}:${index}`
+}
+
+function parseMotionKey(key: string) {
+  const [group, indexStr] = key.split(':')
+  const index = Number.parseInt(indexStr)
+  if (!group || Number.isNaN(index))
+    return null
+  return { group, index }
+}
+
+function getEmotionMotionKey(emotionValue: string) {
+  const entry = emotionMotionMap.value[emotionValue]
+  if (!entry)
+    return ''
+  return makeMotionKey(entry.group, entry.index ?? 0)
+}
+
+function setEmotionMotion(emotionValue: string, key: string) {
+  if (!key) {
+    emotionMotionMap.value[emotionValue] = null
+    return
+  }
+  const parsed = parseMotionKey(key)
+  if (parsed)
+    emotionMotionMap.value[emotionValue] = parsed
+}
 
 // Get available runtime motions from the model
 onMounted(() => {
@@ -267,6 +304,38 @@ onUnmounted(() => {
       v-model="live2dDisableFocus"
       :label="t('settings.live2d.focus.button-disable.title')"
     />
+  </Section>
+  <Section
+    title="Emotion Motion Map"
+    icon="i-solar:face-scan-circle-bold-duotone"
+    :class="[
+      'rounded-xl',
+      'bg-white/80  dark:bg-black/75',
+      'backdrop-blur-lg',
+    ]"
+    size="sm"
+    :expand="false"
+  >
+    <div v-if="motionOptions.length === 0" text-sm text-neutral-500 dark:text-neutral-400>
+      No motions available (load a Live2D model first).
+    </div>
+    <div v-else class="space-y-2">
+      <div v-for="emotion in emotionOptions" :key="emotion.value" class="flex items-center justify-between gap-3">
+        <span class="text-sm text-neutral-700 dark:text-neutral-300">{{ emotion.label }}</span>
+        <select
+          :value="getEmotionMotionKey(emotion.value)"
+          class="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          @change="setEmotionMotion(emotion.value, ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">
+            None
+          </option>
+          <option v-for="motion in motionOptions" :key="motion.key" :value="motion.key">
+            {{ motion.label }}
+          </option>
+        </select>
+      </div>
+    </div>
   </Section>
   <Section
     title="Parameters"

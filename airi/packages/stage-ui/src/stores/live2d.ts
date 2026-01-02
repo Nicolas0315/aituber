@@ -63,6 +63,7 @@ export const useLive2d = defineStore('live2d', () => {
   const [currentMotion, resetCurrentMotion] = createResettableRef<{ group: string, index?: number }>({ group: 'Idle', index: 0 })
   const [availableMotions, resetAvailableMotions] = createResettableRef<{ motionName: string, motionIndex: number, fileName: string }[]>([])
   const [motionMap, resetMotionMap] = createResettableLocalStorage<Record<string, string>>('settings/live2d/motion-map', {})
+  const [emotionMotionMap, resetEmotionMotionMap] = createResettableLocalStorage<Record<string, { group: string, index?: number } | null>>('settings/live2d/emotion-motion-map', {})
   const [scale, resetScale] = createResettableLocalStorage('settings/live2d/scale', 1)
 
   // Live2D model parameters
@@ -73,6 +74,7 @@ export const useLive2d = defineStore('live2d', () => {
     resetCurrentMotion()
     resetAvailableMotions()
     resetMotionMap()
+    resetEmotionMotionMap()
     resetScale()
     resetModelParameters()
     shouldUpdateView()
@@ -84,6 +86,7 @@ export const useLive2d = defineStore('live2d', () => {
     currentMotion,
     availableMotions,
     motionMap,
+    emotionMotionMap,
     scale,
     modelParameters,
 
