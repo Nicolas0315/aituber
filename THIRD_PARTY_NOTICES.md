@@ -20,5 +20,5 @@ License: MIT (see `LICENSES/neuro.MIT.txt`)
 
 ## AIRIS-VtuberAI
 Source: https://github.com/neurokitti/AIRIS-VtuberAI  
-License: No LICENSE file found in the repository at the time of integration.  
-Status: Do not redistribute code/assets from this repo unless a license is provided by the author.
+License: MIT License (Non-Commercial) (see `LICENSES/airis-vtuberai.MIT-NonCommercial.txt`)  
+Restriction: Commercial use and distribution are prohibited by the upstream license.
