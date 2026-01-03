@@ -5,7 +5,7 @@ This example runs AIAvatarKit as a local speech-to-speech backend with:
 - Local STT (faster-whisper)
 - Local TTS (VOICEVOX)
 - Optional Twitch/YouTube chat ingestion
-- Local vector memory
+- Local vector memory with periodic summarization
 
 ## Requirements
 - Python 3.10+
@@ -122,3 +122,4 @@ If you want chat responses to speak through the Live2D avatar, set the same
 ## Memory
 The memory store defaults to `MEMORY_BACKEND=auto`:
 - Uses Chroma if installed, otherwise FAISS if available, else falls back to SQLite text search.
+- Summaries are refreshed in the background (see `MEMORY_SUMMARY_*` env vars).
