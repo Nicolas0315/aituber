@@ -1,6 +1,8 @@
 import asyncio
+import logging
 import os
 import time
+from typing import List
 
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
@@ -21,7 +23,9 @@ from chat_sources import (
     TwitchChatSource,
     YouTubeChatSource,
 )
-from memory import SimpleMemoryStore
+from memory import create_memory_store_from_env
+
+logger = logging.getLogger(__name__)
 
 
 def env_bool(name: str, default: str = "false") -> bool:
@@ -137,6 +141,11 @@ def create_tts_provider(debug: bool):
 
 
 DEBUG = env_bool("DEBUG", "false")
+MEMORY_SUMMARY_ENABLED = env_bool("MEMORY_SUMMARY_ENABLED", "true")
+MEMORY_SUMMARY_INTERVAL_SEC = int(os.getenv("MEMORY_SUMMARY_INTERVAL_SEC", "600"))
+MEMORY_SUMMARY_MIN_NEW = int(os.getenv("MEMORY_SUMMARY_MIN_NEW", "20"))
+MEMORY_SUMMARY_BATCH_SIZE = int(os.getenv("MEMORY_SUMMARY_BATCH_SIZE", "50"))
+MEMORY_SUMMARY_MAX_CHARS = int(os.getenv("MEMORY_SUMMARY_MAX_CHARS", "4000"))
 LLM_BASE_URL = resolve_llm_base_url()
 LLM_API_KEY = os.getenv("LLM_API_KEY", "local")
 LLM_MODEL = os.getenv("LLM_MODEL", "local-model")
@@ -196,9 +205,108 @@ aiavatar_app = AIAvatarWebSocketServer(
 )
 
 
-# Memory tool (simple local store)
-memory_store = SimpleMemoryStore(db_path=os.getenv("MEMORY_DB", "memory.db"))
+# Memory tool (vector store + log)
+memory_store = create_memory_store_from_env()
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "5"))
+
+SUMMARY_SYSTEM_PROMPT = """
+You are a memory summarizer for a VTuber.
+Summarize the provided dialog lines into 3-7 short bullet points.
+Focus on stable facts, preferences, and commitments.
+Do not include greetings or filler.
+Return only the bullet list.
+""".strip()
+
+
+def trim_dialog_lines(lines: List[str], max_chars: int) -> str:
+    if max_chars <= 0:
+        return "\n".join(lines)
+    total = 0
+    kept: List[str] = []
+    for line in reversed(lines):
+        line_len = len(line) + 1
+        if kept and total + line_len > max_chars:
+            break
+        kept.append(line)
+        total += line_len
+    return "\n".join(reversed(kept))
+
+
+async def summarize_with_llm(text: str) -> str:
+    if not text.strip():
+        return ""
+
+    messages = [
+        {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+        {"role": "user", "content": text},
+    ]
+
+    if hasattr(llm, "openai_client"):
+        params = {
+            "model": llm.model,
+            "messages": messages,
+        }
+        reasoning_effort = getattr(llm, "reasoning_effort", None)
+        if reasoning_effort:
+            params["reasoning_effort"] = reasoning_effort
+        elif llm.model.startswith("gpt-5.1"):
+            params["reasoning_effort"] = "none"
+        elif llm.model.startswith("gpt-5"):
+            params["reasoning_effort"] = "minimal"
+        else:
+            params["temperature"] = getattr(llm, "temperature", 0.3)
+
+        extra_body = getattr(llm, "extra_body", None)
+        if extra_body:
+            params["extra_body"] = extra_body
+
+        try:
+            resp = await llm.openai_client.chat.completions.create(**params)
+            content = resp.choices[0].message.content or ""
+            return content.strip()
+        except Exception as exc:
+            logger.warning(f"Summary LLM call failed, falling back to streaming: {exc}")
+
+    output: List[str] = []
+    async for chunk in llm.get_llm_stream_response("memory_summary", "memory", messages):
+        if chunk.text:
+            output.append(chunk.text)
+    return "".join(output).strip()
+
+
+async def maybe_summarize_memory() -> None:
+    last_id = memory_store.get_last_summary_marker()
+    new_count = memory_store.count_since(last_id, kinds=["dialog"])
+    if new_count < MEMORY_SUMMARY_MIN_NEW:
+        return
+
+    records = memory_store.list_since(last_id, MEMORY_SUMMARY_BATCH_SIZE, kinds=["dialog"])
+    if not records:
+        return
+
+    lines = [record.text for record in records]
+    summary_input = trim_dialog_lines(lines, MEMORY_SUMMARY_MAX_CHARS)
+    summary = await summarize_with_llm(summary_input)
+    if not summary:
+        return
+
+    metadata = {
+        "source_first_id": records[0].id,
+        "source_last_id": records[-1].id,
+        "source_count": len(records),
+    }
+    memory_store.add(summary, kind="summary", metadata=metadata)
+
+
+async def memory_summary_worker() -> None:
+    if not MEMORY_SUMMARY_ENABLED:
+        return
+    while True:
+        await asyncio.sleep(MEMORY_SUMMARY_INTERVAL_SEC)
+        try:
+            await maybe_summarize_memory()
+        except Exception as exc:
+            logger.warning(f"Memory summarization failed: {exc}")
 
 search_memory_spec = {
     "type": "function",
@@ -236,9 +344,9 @@ async def search_memory(query: str, metadata: dict = None):
 @aiavatar_app.sts.on_finish
 async def store_memory(request, response):
     if request.text:
-        memory_store.add(f"user: {request.text}", kind="dialog")
+        memory_store.add(f"user: {request.text}", kind="dialog", metadata={"role": "user"})
     if response.voice_text:
-        memory_store.add(f"assistant: {response.voice_text}", kind="dialog")
+        memory_store.add(f"assistant: {response.voice_text}", kind="dialog", metadata={"role": "assistant"})
 
 
 async def chat_ingest_worker():
@@ -378,3 +486,4 @@ def metrics():
 @app.on_event("startup")
 async def on_startup():
     asyncio.create_task(chat_ingest_worker())
+    asyncio.create_task(memory_summary_worker())
