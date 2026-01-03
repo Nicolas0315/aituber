@@ -5,7 +5,7 @@ This example runs AIAvatarKit as a local speech-to-speech backend with:
 - Local STT (faster-whisper)
 - Local TTS (VOICEVOX)
 - Optional Twitch/YouTube chat ingestion
-- Simple local memory tool
+- Local vector memory
 
 ## Requirements
 - Python 3.10+
@@ -19,6 +19,8 @@ This example runs AIAvatarKit as a local speech-to-speech backend with:
 pip install -e .
 pip install faster-whisper
 pip install twitchio pytchat  # optional, for chat ingestion
+pip install chromadb sentence-transformers  # optional, for vector memory
+pip install faiss-cpu fastembed  # optional, alternative vector backend/embeddings
 ```
 
 ## Config
@@ -116,3 +118,7 @@ If you want chat responses to speak through the Live2D avatar, set the same
 - The memory tool is simple and local; it stores dialog lines and retrieves by text match.
 - The Live2D client should connect with the same `CHAT_SESSION_ID` if you want chat responses
   to be spoken by the avatar.
+
+## Memory
+The memory store defaults to `MEMORY_BACKEND=auto`:
+- Uses Chroma if installed, otherwise FAISS if available, else falls back to SQLite text search.

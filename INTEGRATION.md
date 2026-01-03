@@ -24,6 +24,7 @@ Optional presets:
 
 Optional:
 - Twitch/YouTube chat ingestion (set `TWITCH_*` / `YOUTUBE_*`)
+- Vector memory (see `MEMORY_*` env vars)
 
 ### Frontend (AIRI)
 1) Install and run stage-web:
